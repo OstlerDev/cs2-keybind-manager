@@ -225,25 +225,17 @@ mod tests {
     }
 
     fn sample_cfg(cfg_dir: &Path) -> AppConfig {
+        let mk = |name: &str, msg: &str| Page {
+            binds: vec![KeyBind {
+                key: "1".into(),
+                message: msg.into(),
+            }],
+            ..Page::new(name)
+        };
         AppConfig {
             cs2_cfg_dir: Some(cfg_dir.to_path_buf()),
             toggle_key: "F1".into(),
-            pages: vec![
-                Page {
-                    name: "A".into(),
-                    binds: vec![KeyBind {
-                        key: "1".into(),
-                        message: "hi".into(),
-                    }],
-                },
-                Page {
-                    name: "B".into(),
-                    binds: vec![KeyBind {
-                        key: "1".into(),
-                        message: "yo".into(),
-                    }],
-                },
-            ],
+            pages: vec![mk("A", "hi"), mk("B", "yo")],
             selected_page: 0,
         }
     }
@@ -311,11 +303,11 @@ mod tests {
         let cfg = AppConfig {
             cs2_cfg_dir: Some(td.path().to_path_buf()),
             pages: vec![Page {
-                name: "P".into(),
                 binds: vec![KeyBind {
                     key: "1".into(),
                     message: "hi".into(),
                 }],
+                ..Page::new("P")
             }],
             ..AppConfig::default()
         };

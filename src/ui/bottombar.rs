@@ -22,7 +22,7 @@ pub fn ui(ui: &mut egui::Ui, cfg: &AppConfig, export_clicked: &mut bool) {
             Ok(()) if cfg.cs2_cfg_dir.is_none() => {
                 ui.colored_label(
                     egui::Color32::from_rgb(220, 150, 60),
-                    "Pick your CS2 cfg directory first.",
+                    "Choose your CS2 cfg directory above to enable export.",
                 );
             }
             Ok(()) => {
@@ -31,7 +31,10 @@ pub fn ui(ui: &mut egui::Ui, cfg: &AppConfig, export_clicked: &mut bool) {
             Err(errors) => {
                 ui.colored_label(
                     egui::Color32::from_rgb(220, 80, 80),
-                    format!("{} validation error(s) — see editor", errors.len()),
+                    format!(
+                        "{} issue(s) blocking export — see the Issues list under the bind editor.",
+                        errors.len()
+                    ),
                 );
             }
         }

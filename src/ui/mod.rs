@@ -74,8 +74,7 @@ impl App {
                 };
                 self.set_toast(
                     format!(
-                        "Exported {} file(s) to your CS2 cfg folder.{} \
-                         If your binds don't load on launch, add `+exec autoexec` to your CS2 launch options in Steam.",
+                        "Exported {} file(s) to your CS2 cfg folder.{}",
                         report.written.len(),
                         suffix
                     ),

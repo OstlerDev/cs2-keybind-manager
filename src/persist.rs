@@ -120,11 +120,11 @@ mod tests {
             cs2_cfg_dir: Some(PathBuf::from("C:/cs2/cfg")),
             toggle_key: "F2".into(),
             pages: vec![Page {
-                name: "Trash".into(),
                 binds: vec![KeyBind {
                     key: "1".into(),
                     message: "ez".into(),
                 }],
+                ..Page::new("Trash")
             }],
             selected_page: 0,
         };

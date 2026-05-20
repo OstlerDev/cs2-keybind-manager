@@ -11,6 +11,7 @@ use std::path::PathBuf;
 fn page(name: &str, binds: &[(&str, &str)]) -> Page {
     Page {
         name: name.into(),
+        direct_key: None,
         binds: binds
             .iter()
             .map(|(k, m)| KeyBind {
@@ -19,6 +20,12 @@ fn page(name: &str, binds: &[(&str, &str)]) -> Page {
             })
             .collect(),
     }
+}
+
+fn page_with(name: &str, direct: Option<&str>, binds: &[(&str, &str)]) -> Page {
+    let mut p = page(name, binds);
+    p.direct_key = direct.map(Into::into);
+    p
 }
 
 fn cfg_with(pages: Vec<Page>, toggle: &str) -> AppConfig {
@@ -85,8 +92,12 @@ mod generator {
     fn three_page_cycle() {
         let cfg = cfg_with(
             vec![
-                page("Strat Calls", &[("1", "Rush B"), ("2", "Smoke mid")]),
-                page("Trash Talk", &[("1", "ez"), ("2", "ggwp")]),
+                page_with(
+                    "Strat Calls",
+                    Some("F2"),
+                    &[("1", "Rush B"), ("2", "Smoke mid")],
+                ),
+                page_with("Trash Talk", Some("F3"), &[("1", "ez"), ("2", "ggwp")]),
                 page("Compliments", &[("1", "Nice shot!"), ("2", "Good half")]),
             ],
             "F1",
@@ -117,6 +128,33 @@ mod generator {
             files[0].warnings[0].kind,
             escape::SanitizationWarning::StrippedDoubleQuotes
         );
+    }
+
+    #[test]
+    fn no_echo_lines_are_emitted() {
+        // We deliberately don't emit `echo` lines: CS2 only renders them in
+        // the console (not the HUD) without screenmessage_show, which is
+        // cheat-protected on Valve servers.
+        let cfg = cfg_with(vec![page("P", &[("1", "Rush B")])], "F1");
+        let body = &generate_page_files(&cfg)[0].contents;
+        assert!(!body.contains("echo "), "no echo lines, got: {body}");
+    }
+
+    #[test]
+    fn direct_keys_appear_in_every_page() {
+        let cfg = cfg_with(
+            vec![
+                page_with("A", Some("F2"), &[("1", "a")]),
+                page_with("B", Some("F3"), &[("1", "b")]),
+                page("C", &[("1", "c")]),
+            ],
+            "F1",
+        );
+        let files = generate_page_files(&cfg);
+        for f in &files {
+            assert!(f.contents.contains(r#"bind "f2" "exec bindmgr_page_1""#));
+            assert!(f.contents.contains(r#"bind "f3" "exec bindmgr_page_2""#));
+        }
     }
 }
 
@@ -203,6 +241,65 @@ mod validation {
             .iter()
             .any(|e| matches!(e, ValidationError::InvalidBindKey { .. })));
     }
+
+    #[test]
+    fn direct_key_can_be_unset() {
+        let cfg = cfg_with(vec![page("P", &[("1", "hi")])], "F1");
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn invalid_direct_key_is_an_error() {
+        let cfg = cfg_with(
+            vec![page_with("P", Some("hyperspace"), &[("1", "hi")])],
+            "F1",
+        );
+        assert!(err(&cfg)
+            .iter()
+            .any(|e| matches!(e, ValidationError::InvalidDirectKey { page_index: 0, .. })));
+    }
+
+    #[test]
+    fn duplicate_direct_keys_are_an_error() {
+        let cfg = cfg_with(
+            vec![
+                page_with("A", Some("F2"), &[("1", "a")]),
+                page_with("B", Some("F2"), &[("1", "b")]),
+            ],
+            "F1",
+        );
+        assert!(err(&cfg)
+            .iter()
+            .any(|e| matches!(e, ValidationError::DuplicateDirectKey { .. })));
+    }
+
+    #[test]
+    fn direct_key_equal_to_toggle_is_an_error() {
+        let cfg = cfg_with(vec![page_with("A", Some("F1"), &[("1", "a")])], "F1");
+        assert!(err(&cfg)
+            .iter()
+            .any(|e| matches!(e, ValidationError::DirectKeyEqualsToggle { .. })));
+    }
+
+    #[test]
+    fn direct_key_colliding_with_a_bind_key_is_an_error() {
+        let cfg = cfg_with(
+            vec![
+                page_with("A", Some("kp_5"), &[("1", "a")]),
+                page("B", &[("kp_5", "b")]),
+            ],
+            "F1",
+        );
+        assert!(err(&cfg)
+            .iter()
+            .any(|e| matches!(e, ValidationError::DirectKeyCollidesWithBind { .. })));
+    }
+
+    #[test]
+    fn whitespace_only_direct_key_is_treated_as_unset() {
+        let cfg = cfg_with(vec![page_with("A", Some("   "), &[("1", "a")])], "F1");
+        assert!(validate(&cfg).is_ok());
+    }
 }
 
 mod autoexec {
@@ -272,5 +369,14 @@ mod autoexec {
         let out = update_autoexec("", &cfg);
         assert!(out.contains(AUTOEXEC_BEGIN));
         assert!(!out.contains("exec bindmgr_page"));
+    }
+
+    #[test]
+    fn block_does_not_emit_cheat_protected_commands() {
+        // screenmessage_show is cheat-protected on Valve servers; including
+        // it in autoexec would just spam an "ignored" warning into the
+        // console on every game launch.
+        let out = update_autoexec("", &cfg());
+        assert!(!out.contains("screenmessage_show"));
     }
 }

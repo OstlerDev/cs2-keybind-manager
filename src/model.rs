@@ -36,10 +36,17 @@ impl Default for AppConfig {
     }
 }
 
-/// A single layer of binds. All pages share the same toggle key.
+/// A single layer of binds. All pages share the same cycle-pages key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     pub name: String,
+
+    /// Optional dedicated key that jumps directly to this page from any
+    /// other page. Independent of the global cycle-pages key. Empty/None
+    /// means "no direct shortcut for this page".
+    #[serde(default)]
+    pub direct_key: Option<String>,
+
     pub binds: Vec<KeyBind>,
 }
 
@@ -47,6 +54,7 @@ impl Page {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            direct_key: None,
             binds: Vec::new(),
         }
     }
@@ -80,6 +88,7 @@ mod tests {
             toggle_key: "F2".into(),
             pages: vec![Page {
                 name: "Strat Calls".into(),
+                direct_key: Some("F3".into()),
                 binds: vec![KeyBind {
                     key: "1".into(),
                     message: "Rush B".into(),
@@ -91,6 +100,25 @@ mod tests {
         let back: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.toggle_key, "F2");
         assert_eq!(back.pages[0].binds[0].message, "Rush B");
+        assert_eq!(back.pages[0].direct_key.as_deref(), Some("F3"));
+    }
+
+    #[test]
+    fn legacy_state_files_with_extra_fields_load_cleanly() {
+        // Old state.json (from a build that had display_name) should still
+        // load: serde silently drops unknown fields by default.
+        let json = r#"{
+            "cs2_cfg_dir": null,
+            "toggle_key": "F1",
+            "pages": [{
+                "name": "Old Page",
+                "display_name": "STRAT",
+                "binds": [{"key": "1", "message": "hi"}]
+            }]
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.pages[0].name, "Old Page");
+        assert_eq!(cfg.pages[0].direct_key, None);
     }
 
     #[test]
@@ -102,5 +130,19 @@ mod tests {
         }"#;
         let cfg: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.selected_page, 0);
+    }
+
+    #[test]
+    fn old_state_files_without_direct_key_load_cleanly() {
+        let json = r#"{
+            "cs2_cfg_dir": null,
+            "toggle_key": "F1",
+            "pages": [{
+                "name": "Old Page",
+                "binds": [{"key": "1", "message": "hi"}]
+            }]
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.pages[0].direct_key, None);
     }
 }

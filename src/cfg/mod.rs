@@ -75,6 +75,151 @@ pub enum ValidationError {
         bind_index: usize,
         key: String,
     },
+
+    /// The page's `direct_key` is set but isn't a recognized CS2 key token.
+    InvalidDirectKey {
+        page_index: usize,
+        token: String,
+    },
+    /// Two pages have the same `direct_key`.
+    DuplicateDirectKey {
+        page_index: usize,
+        other_page_index: usize,
+        key: String,
+    },
+    /// A page's `direct_key` equals the global toggle key.
+    DirectKeyEqualsToggle {
+        page_index: usize,
+        key: String,
+    },
+    /// A page's `direct_key` equals a bind key on some page (which would
+    /// produce two `bind` lines for the same key in that page's exported
+    /// cfg, breaking one of them).
+    DirectKeyCollidesWithBind {
+        direct_page_index: usize,
+        bound_page_index: usize,
+        bind_index: usize,
+        key: String,
+    },
+}
+
+impl ValidationError {
+    /// Where in the UI this error originates. Returns `Some(page_index)` for
+    /// errors tied to a specific page so callers can filter the list down to
+    /// "errors for the page I'm currently editing".
+    pub fn page(&self) -> Option<usize> {
+        match self {
+            Self::NoPages => None,
+            Self::InvalidToggleKey { .. } => None,
+            Self::EmptyPage { page_index }
+            | Self::InvalidBindKey { page_index, .. }
+            | Self::EmptyMessage { page_index, .. }
+            | Self::DuplicateKeyOnPage { page_index, .. }
+            | Self::ToggleKeyCollision { page_index, .. }
+            | Self::InvalidDirectKey { page_index, .. }
+            | Self::DirectKeyEqualsToggle { page_index, .. } => Some(*page_index),
+            Self::DuplicateDirectKey { page_index, .. } => Some(*page_index),
+            Self::DirectKeyCollidesWithBind {
+                direct_page_index, ..
+            } => Some(*direct_page_index),
+        }
+    }
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPages => write!(f, "Add at least one page before exporting."),
+            Self::EmptyPage { page_index } => write!(
+                f,
+                "Page {} has no binds. Add at least one bind or delete the page.",
+                page_index + 1
+            ),
+            Self::InvalidToggleKey { token } => write!(
+                f,
+                "Cycle-pages key '{token}' isn't a recognized CS2 key token. \
+                 Examples: F1, F2, kp_5, mouse4."
+            ),
+            Self::InvalidBindKey {
+                page_index,
+                bind_index,
+                token,
+            } => write!(
+                f,
+                "Page {}, bind {}: key '{token}' isn't a recognized CS2 key token. \
+                 Examples: 1, F2, kp_5, mwheelup, semicolon.",
+                page_index + 1,
+                bind_index + 1
+            ),
+            Self::EmptyMessage {
+                page_index,
+                bind_index,
+            } => write!(
+                f,
+                "Page {}, bind {}: message is empty.",
+                page_index + 1,
+                bind_index + 1
+            ),
+            Self::DuplicateKeyOnPage { page_index, key } => write!(
+                f,
+                "Page {} has two binds for key '{key}'. Each key can only appear once per page.",
+                page_index + 1
+            ),
+            Self::ToggleKeyCollision {
+                page_index,
+                bind_index,
+                key,
+            } => write!(
+                f,
+                "Page {}, bind {}: key '{key}' is the same as the cycle-pages key. \
+                 Pick a different key for this bind.",
+                page_index + 1,
+                bind_index + 1
+            ),
+            Self::InvalidDirectKey { page_index, token } => write!(
+                f,
+                "Page {}: direct key '{token}' isn't a recognized CS2 key token.",
+                page_index + 1
+            ),
+            Self::DuplicateDirectKey {
+                page_index,
+                other_page_index,
+                key,
+            } => write!(
+                f,
+                "Pages {} and {} both use direct key '{key}'. Direct keys must be unique.",
+                other_page_index + 1,
+                page_index + 1
+            ),
+            Self::DirectKeyEqualsToggle { page_index, key } => write!(
+                f,
+                "Page {}: direct key '{key}' is the same as the cycle-pages key.",
+                page_index + 1
+            ),
+            Self::DirectKeyCollidesWithBind {
+                direct_page_index,
+                bound_page_index,
+                bind_index,
+                key,
+            } => write!(
+                f,
+                "Page {}'s direct key '{key}' collides with the bind on page {}, row {}. \
+                 Pick a different key.",
+                direct_page_index + 1,
+                bound_page_index + 1,
+                bind_index + 1
+            ),
+        }
+    }
+}
+
+/// Returns the trimmed, normalized direct key for a page if it has one set.
+fn normalized_direct_key(page: &crate::model::Page) -> Option<String> {
+    page.direct_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(keys::normalize)
 }
 
 /// Run every validation rule. Returns *all* errors so the UI can show them
@@ -136,6 +281,53 @@ pub fn validate(cfg: &AppConfig) -> Result<(), Vec<ValidationError>> {
         }
     }
 
+    // direct_key validation. Done in a second pass because each rule needs
+    // to look across all pages.
+    let mut direct_keys: std::collections::HashMap<String, usize> = Default::default();
+    for (pi, page) in cfg.pages.iter().enumerate() {
+        let Some(dk) = normalized_direct_key(page) else {
+            continue;
+        };
+
+        if !keys::is_valid_key_token(&dk) {
+            errors.push(ValidationError::InvalidDirectKey {
+                page_index: pi,
+                token: page.direct_key.clone().unwrap_or_default(),
+            });
+            continue;
+        }
+
+        if dk == normalized_toggle {
+            errors.push(ValidationError::DirectKeyEqualsToggle {
+                page_index: pi,
+                key: dk.clone(),
+            });
+        }
+
+        if let Some(&prev) = direct_keys.get(&dk) {
+            errors.push(ValidationError::DuplicateDirectKey {
+                page_index: pi,
+                other_page_index: prev,
+                key: dk.clone(),
+            });
+        } else {
+            direct_keys.insert(dk.clone(), pi);
+        }
+
+        for (bp, bound_page) in cfg.pages.iter().enumerate() {
+            for (bi, bind) in bound_page.binds.iter().enumerate() {
+                if keys::normalize(&bind.key) == dk {
+                    errors.push(ValidationError::DirectKeyCollidesWithBind {
+                        direct_page_index: pi,
+                        bound_page_index: bp,
+                        bind_index: bi,
+                        key: dk.clone(),
+                    });
+                }
+            }
+        }
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -146,6 +338,12 @@ pub fn validate(cfg: &AppConfig) -> Result<(), Vec<ValidationError>> {
 /// Generates one `.cfg` file per page. The list is in cycle order: index 0 is
 /// page 1, which is also what `autoexec.cfg` execs at launch.
 ///
+/// Each generated file:
+///   1. Binds every per-page key to its `say` message.
+///   2. Binds the global cycle-pages key to `exec`-ing the next page.
+///   3. Binds every page's direct-key (across the whole app) to `exec`-ing
+///      that page, so the user can jump anywhere from anywhere.
+///
 /// This is a pure function over `cfg`. It does not validate — call
 /// [`validate`] first if you want to refuse bad input.
 pub fn generate_page_files(cfg: &AppConfig) -> Vec<GeneratedFile> {
@@ -155,6 +353,14 @@ pub fn generate_page_files(cfg: &AppConfig) -> Vec<GeneratedFile> {
     }
 
     let toggle = keys::normalize(&cfg.toggle_key);
+
+    let direct_jumps: Vec<(String, usize)> = cfg
+        .pages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| normalized_direct_key(p).map(|k| (k, i)))
+        .collect();
+
     let mut out = Vec::with_capacity(n);
 
     for (i, page) in cfg.pages.iter().enumerate() {
@@ -184,6 +390,14 @@ pub fn generate_page_files(cfg: &AppConfig) -> Vec<GeneratedFile> {
             toggle,
             page_exec_name(next)
         ));
+
+        for (dk, target_idx) in &direct_jumps {
+            body.push_str(&format!(
+                "bind \"{}\" \"exec {}\"\n",
+                dk,
+                page_exec_name(*target_idx)
+            ));
+        }
 
         out.push(GeneratedFile {
             filename: page_filename(i),

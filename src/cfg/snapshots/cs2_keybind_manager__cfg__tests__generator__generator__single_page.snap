@@ -1,6 +1,5 @@
 ---
 source: src/cfg/tests.rs
-assertion_line: 81
 expression: render(&files)
 ---
 === bindmgr_page_1.cfg ===
