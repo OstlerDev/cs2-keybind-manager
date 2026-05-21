@@ -78,17 +78,21 @@ fn token_set() -> &'static HashSet<String> {
             "end",
             "pgup",
             "pgdn",
-            "semicolon",
-            "apostrophe",
-            "comma",
-            "period",
-            "slash",
-            "backslash",
-            "leftbracket",
-            "rightbracket",
-            "minus",
-            "equal",
-            "backquote",
+            // Punctuation keys are stored in their raw-symbol form, matching
+            // what CS2 itself writes into cs2_user_keys_*_slot*.vcfg. Their
+            // textual aliases (`leftbracket`, `comma`, …) still validate
+            // through the alias table in `normalize`.
+            "[",
+            "]",
+            ",",
+            ".",
+            "/",
+            "\\",
+            "'",
+            ";",
+            "`",
+            "-",
+            "=",
         ];
         for token in named {
             s.insert(token.into());
@@ -100,16 +104,35 @@ fn token_set() -> &'static HashSet<String> {
 
 /// Returns true if `token` is a CS2 key token we recognize.
 ///
-/// Comparison is case-insensitive: `F1` and `f1` are both accepted, and the
-/// caller is free to normalize on the way to disk.
+/// Comparison runs through [`normalize`], so both case variants (`F1` /
+/// `f1`) and both alias forms (`[` / `leftbracket`) are accepted.
 pub fn is_valid_key_token(token: &str) -> bool {
-    let lower = token.trim().to_ascii_lowercase();
-    token_set().contains(&lower)
+    token_set().contains(&normalize(token))
 }
 
-/// Normalizes a token to the form CS2 expects: lowercase and trimmed.
+/// Normalizes a token to its canonical CS2 form.
+///
+/// Trims surrounding whitespace, lowercases ASCII letters, and resolves
+/// the legacy Source-engine textual aliases for punctuation keys
+/// (e.g. `leftbracket` → `[`) to the raw-symbol form CS2 now uses
+/// natively. The raw-symbol form is what you see in the import dialog,
+/// the bind editor, and the emitted `bind "<key>" "<cmd>"` lines.
 pub fn normalize(token: &str) -> String {
-    token.trim().to_ascii_lowercase()
+    let lower = token.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "leftbracket" => "[".into(),
+        "rightbracket" => "]".into(),
+        "comma" => ",".into(),
+        "period" => ".".into(),
+        "slash" => "/".into(),
+        "backslash" => "\\".into(),
+        "apostrophe" => "'".into(),
+        "semicolon" => ";".into(),
+        "backquote" => "`".into(),
+        "minus" => "-".into(),
+        "equal" => "=".into(),
+        _ => lower,
+    }
 }
 
 #[cfg(test)]
@@ -152,7 +175,6 @@ mod tests {
         assert!(is_valid_key_token("space"));
         assert!(is_valid_key_token("shift"));
         assert!(is_valid_key_token("uparrow"));
-        assert!(is_valid_key_token("semicolon"));
     }
 
     #[test]
@@ -166,5 +188,51 @@ mod tests {
     fn normalize_lowercases_and_trims() {
         assert_eq!(normalize("  F1 "), "f1");
         assert_eq!(normalize("KP_Multiply"), "kp_multiply");
+    }
+
+    #[test]
+    fn normalize_resolves_textual_aliases_to_raw_symbols() {
+        // Legacy Source-engine textual names collapse to the raw symbol
+        // form CS2 now uses natively in vcfg files and the bind editor.
+        assert_eq!(normalize("leftbracket"), "[");
+        assert_eq!(normalize("rightbracket"), "]");
+        assert_eq!(normalize("comma"), ",");
+        assert_eq!(normalize("period"), ".");
+        assert_eq!(normalize("slash"), "/");
+        assert_eq!(normalize("backslash"), "\\");
+        assert_eq!(normalize("apostrophe"), "'");
+        assert_eq!(normalize("semicolon"), ";");
+        assert_eq!(normalize("backquote"), "`");
+        assert_eq!(normalize("minus"), "-");
+        assert_eq!(normalize("equal"), "=");
+    }
+
+    #[test]
+    fn aliases_are_case_insensitive() {
+        assert_eq!(normalize("LeftBracket"), "[");
+        assert_eq!(normalize("SEMICOLON"), ";");
+    }
+
+    #[test]
+    fn normalize_passes_symbol_form_through_unchanged() {
+        // The symbol form is already canonical; normalize must be a
+        // no-op on it. (Idempotency keeps repeated saves stable.)
+        for sym in ["[", "]", ",", ".", "/", "\\", "'", ";", "`", "-", "="] {
+            assert_eq!(normalize(sym), sym);
+        }
+    }
+
+    #[test]
+    fn both_forms_validate_as_known_tokens() {
+        // Symbol form (canonical):
+        assert!(is_valid_key_token("["));
+        assert!(is_valid_key_token("]"));
+        assert!(is_valid_key_token("`"));
+        assert!(is_valid_key_token("="));
+        // Textual aliases still validate so legacy state.json files and
+        // hand-typed inputs keep working.
+        assert!(is_valid_key_token("leftbracket"));
+        assert!(is_valid_key_token("semicolon"));
+        assert!(is_valid_key_token("BACKQUOTE"));
     }
 }

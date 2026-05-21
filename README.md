@@ -22,13 +22,14 @@ Need one page for serious tactical strat-calling, one page for casual team bante
 Managing layered keybinds by hand means writing a tangle of `bind` and `exec` commands and remembering to chain them in the right order. This app handles all of that behind a clean visual interface.
 
 1. **Set Your Game Folder.** The app auto-detects your CS2 cfg directory at the default Steam path on first launch. If you've installed Steam somewhere unusual, click **Browse…** to point it at the right folder.
-2. **Choose a Cycle-Pages Key.** Pick the key you want to press to step to the next page (default `F1`).
-3. **Build Your Pages.**
+2. **Import What You Already Have (optional, first launch).** The app scans the CS2 user-keys file for **every** Steam account on this machine — typically `…/Steam/userdata/<account-id>/730/local/cfg/cs2_user_keys_0_slot0.vcfg` — and, if any binds are found, offers to import them as your starter page. Binds are grouped by account so multi-account users can mix and match. Each row has a tick box so you can pick exactly what to bring in; gameplay binds (movement, fire, jump) are unticked by default. You can re-open the importer any time via **Scan for existing binds…** in the sidebar.
+3. **Choose a Cycle-Pages Key.** Pick the key you want to press to step to the next page (default `F1`).
+4. **Build Your Pages.**
    - Click **Add Page** to create a new layer (e.g., "Strat Calls").
    - Optionally give the page a **direct key** in the sidebar — pressing it always lands on this page.
-   - Assign a key (e.g., `1`) and type the message you want it to send (e.g., *"Let's rush B, don't stop!"*).
+   - Assign a key (e.g., `1`, `[`, `f5`, `mouse4`) and type the message you want it to send (e.g., *"Let's rush B, don't stop!"*). Punctuation keys can be typed as their raw symbols (`[`, `]`, `,`, `.`, `/`, `'`, `;`, `` ` ``, `-`, `=`); the older textual aliases (`leftbracket`, etc.) are still accepted on input but get normalized for you. The message field is a wrapping paragraph editor, so long lines stay readable. Each row has a **Chat / Raw** selector: Chat prepends `say ` for you; Raw emits the command verbatim, so you can also bind things like `slot1`, `say_team gg`, or `+jump`.
    - Go to your next page, assign the same key, and give it a different message (e.g., *"Good half everyone!"*).
-4. **Export to CS2.** Click the export button. The app formats and saves everything into your game's cfg directory.
+5. **Export to CS2.** Click the export button. The app formats and saves everything into your game's cfg directory.
 
 ---
 
@@ -49,7 +50,7 @@ Once you've exported your pages, using them is seamless.
 No. Once you click "Export to CS2", you can close the application. The game reads the saved settings directly from disk.
 
 **Can I use this for things other than chat commands, like buy binds or crosshair swaps?**
-Yes. While it's designed with `say` commands in mind, any valid CS2 console command can be typed into the message field.
+Yes. Each bind row has a **Chat / Raw** selector. Chat mode is the default and prepends `say ` for you (just type the text). Switch to Raw mode for any other CS2 console command — `slot1`, `say_team gg`, `+jump`, `exec other_cfg`, etc. — and the command is written verbatim into the generated cfg.
 
 **Will this overwrite my existing crosshairs, viewmodels, or custom binds?**
 The app's own block in `autoexec.cfg` lives between clear marker comments and won't touch anything outside it, and our own page cfg files are prefixed `bindmgr_page_*.cfg`. However, **regular gameplay binds you've set elsewhere (in `config.cfg` or via in-game settings) can be overwritten by this app's binds at runtime** — once a page is loaded, its bind lines take effect for the duration of that session. Use the live preview to see exactly what's being bound before exporting. The app also creates a one-time `autoexec.cfg.bak` backup the first time it edits your autoexec.

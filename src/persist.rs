@@ -60,14 +60,33 @@ pub fn load() -> AppConfig {
         }
     };
 
-    match serde_json::from_str(&raw) {
-        Ok(cfg) => cfg,
+    match serde_json::from_str::<AppConfig>(&raw) {
+        Ok(mut cfg) => {
+            migrate_legacy_keys(&mut cfg);
+            cfg
+        }
         Err(e) => {
             tracing::warn!(
                 "failed to parse {}: {e}; starting fresh (existing file left untouched)",
                 path.display()
             );
             AppConfig::default()
+        }
+    }
+}
+
+/// Rewrites legacy textual key aliases (`leftbracket`, `comma`, …) into
+/// their canonical raw-symbol form. Older versions of this app stored
+/// punctuation keys as their Source-engine textual names; the bind
+/// editor now expects symbols, so we migrate at load time.
+fn migrate_legacy_keys(cfg: &mut AppConfig) {
+    cfg.toggle_key = crate::cfg::keys::normalize(&cfg.toggle_key);
+    for page in &mut cfg.pages {
+        if let Some(dk) = page.direct_key.as_mut() {
+            *dk = crate::cfg::keys::normalize(dk);
+        }
+        for bind in &mut page.binds {
+            bind.key = crate::cfg::keys::normalize(&bind.key);
         }
     }
 }
@@ -123,14 +142,52 @@ mod tests {
                 binds: vec![KeyBind {
                     key: "1".into(),
                     message: "ez".into(),
+                    ..KeyBind::default()
                 }],
                 ..Page::new("Trash")
             }],
-            selected_page: 0,
+            ..AppConfig::default()
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
         let back: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.pages.len(), 1);
         assert_eq!(back.pages[0].binds[0].message, "ez");
+    }
+
+    #[test]
+    fn migrate_legacy_keys_rewrites_textual_aliases_to_symbols() {
+        // Mimic a state.json saved by an older build that used textual
+        // names for punctuation keys.
+        let mut cfg = AppConfig {
+            toggle_key: "F1".into(),
+            pages: vec![Page {
+                direct_key: Some("semicolon".into()),
+                binds: vec![
+                    KeyBind {
+                        key: "leftbracket".into(),
+                        message: "hi".into(),
+                        ..KeyBind::default()
+                    },
+                    KeyBind {
+                        key: "BACKQUOTE".into(),
+                        message: "yo".into(),
+                        ..KeyBind::default()
+                    },
+                    KeyBind {
+                        key: "f5".into(),
+                        message: "untouched".into(),
+                        ..KeyBind::default()
+                    },
+                ],
+                ..Page::new("Legacy")
+            }],
+            ..AppConfig::default()
+        };
+        migrate_legacy_keys(&mut cfg);
+        assert_eq!(cfg.toggle_key, "f1");
+        assert_eq!(cfg.pages[0].direct_key.as_deref(), Some(";"));
+        assert_eq!(cfg.pages[0].binds[0].key, "[");
+        assert_eq!(cfg.pages[0].binds[1].key, "`");
+        assert_eq!(cfg.pages[0].binds[2].key, "f5");
     }
 }

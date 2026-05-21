@@ -3,7 +3,7 @@
 use crate::cfg::keys;
 use crate::model::{AppConfig, Page};
 
-pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig) {
+pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig, scan_requested: &mut bool) {
     ui.add_space(4.0);
     ui.heading("Pages");
     ui.label(
@@ -75,6 +75,15 @@ pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig) {
             }
         }
     });
+
+    ui.add_space(4.0);
+    if ui
+        .button("Scan for existing binds…")
+        .on_hover_text("Read your CS2 user-keys file and import selected binds as a new page.")
+        .clicked()
+    {
+        *scan_requested = true;
+    }
 
     ui.add_space(8.0);
     if !cfg.pages.is_empty() {

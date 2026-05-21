@@ -23,6 +23,12 @@ pub struct AppConfig {
     /// Index of the page currently being edited in the UI. Not exported.
     #[serde(default)]
     pub selected_page: usize,
+
+    /// Whether the first-run import flow has already been shown. We only
+    /// offer it once per state file so users who skipped don't get nagged
+    /// every launch.
+    #[serde(default)]
+    pub import_offered: bool,
 }
 
 impl Default for AppConfig {
@@ -32,6 +38,7 @@ impl Default for AppConfig {
             toggle_key: "F1".into(),
             pages: vec![Page::new("Page 1")],
             selected_page: 0,
+            import_offered: false,
         }
     }
 }
@@ -60,11 +67,27 @@ impl Page {
     }
 }
 
-/// One row in the bind editor: a CS2 key token mapped to a chat message.
+/// How a `KeyBind`'s message is rendered into the generated `bind` line.
+///
+/// `Chat` is the friendly default: the user types the chat text and the
+/// generator prepends `say ` at export. `Raw` is the escape hatch for
+/// non-chat commands (e.g. `slot1`, `+jump`, `say_team Hi`) where the
+/// message is emitted verbatim as the bind target.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BindKind {
+    #[default]
+    Chat,
+    Raw,
+}
+
+/// One row in the bind editor: a CS2 key token mapped to a chat message or
+/// raw console command (see [`BindKind`]).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KeyBind {
     pub key: String,
     pub message: String,
+    #[serde(default)]
+    pub kind: BindKind,
 }
 
 #[cfg(test)]
@@ -79,6 +102,32 @@ mod tests {
         assert_eq!(cfg.pages[0].name, "Page 1");
         assert!(cfg.pages[0].binds.is_empty());
         assert_eq!(cfg.selected_page, 0);
+        assert!(!cfg.import_offered);
+    }
+
+    #[test]
+    fn default_bind_kind_is_chat() {
+        assert_eq!(BindKind::default(), BindKind::Chat);
+        assert_eq!(KeyBind::default().kind, BindKind::Chat);
+    }
+
+    #[test]
+    fn legacy_keybind_without_kind_field_defaults_to_chat() {
+        let json = r#"{"key": "1", "message": "Rush B"}"#;
+        let bind: KeyBind = serde_json::from_str(json).unwrap();
+        assert_eq!(bind.kind, BindKind::Chat);
+        assert_eq!(bind.message, "Rush B");
+    }
+
+    #[test]
+    fn missing_import_offered_field_defaults_to_false() {
+        let json = r#"{
+            "cs2_cfg_dir": null,
+            "toggle_key": "F1",
+            "pages": []
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.import_offered);
     }
 
     #[test]
@@ -89,18 +138,30 @@ mod tests {
             pages: vec![Page {
                 name: "Strat Calls".into(),
                 direct_key: Some("F3".into()),
-                binds: vec![KeyBind {
-                    key: "1".into(),
-                    message: "Rush B".into(),
-                }],
+                binds: vec![
+                    KeyBind {
+                        key: "1".into(),
+                        message: "Rush B".into(),
+                        kind: BindKind::Chat,
+                    },
+                    KeyBind {
+                        key: "2".into(),
+                        message: "slot1".into(),
+                        kind: BindKind::Raw,
+                    },
+                ],
             }],
             selected_page: 0,
+            import_offered: true,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.toggle_key, "F2");
         assert_eq!(back.pages[0].binds[0].message, "Rush B");
+        assert_eq!(back.pages[0].binds[0].kind, BindKind::Chat);
+        assert_eq!(back.pages[0].binds[1].kind, BindKind::Raw);
         assert_eq!(back.pages[0].direct_key.as_deref(), Some("F3"));
+        assert!(back.import_offered);
     }
 
     #[test]

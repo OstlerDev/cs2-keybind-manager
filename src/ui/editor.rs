@@ -2,7 +2,7 @@
 //! validation error in plain English.
 
 use crate::cfg::{keys, validate, ValidationError};
-use crate::model::{AppConfig, KeyBind};
+use crate::model::{AppConfig, BindKind, KeyBind};
 
 pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig) {
     ui.add_space(4.0);
@@ -21,18 +21,29 @@ pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig) {
 
     let mut to_remove: Option<usize> = None;
 
+    // Column widths for everything except the message field. The message
+    // takes the remaining horizontal space and wraps when content
+    // overflows, so long chat lines display as a multi-line paragraph.
+    const KEY_W: f32 = 80.0;
+    const KIND_W: f32 = 78.0;
+    const ISSUE_W: f32 = 170.0;
+    const REMOVE_W: f32 = 80.0;
+    const FIXED_W: f32 = KEY_W + KIND_W + ISSUE_W + REMOVE_W + 56.0; // + grid spacing
+    let message_width = (ui.available_width() - FIXED_W).max(220.0);
+
     egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
         .max_height(ui.available_height() * 0.55)
         .show(ui, |ui| {
             egui::Grid::new("bind_grid")
-                .num_columns(4)
+                .num_columns(5)
                 .spacing([8.0, 6.0])
                 .striped(true)
                 .show(ui, |ui| {
                     ui.strong("Key");
-                    ui.strong("Chat message");
+                    ui.strong("Kind");
+                    ui.strong("Message / command");
                     ui.strong("");
                     ui.strong("");
                     ui.end_row();
@@ -40,13 +51,39 @@ pub fn ui(ui: &mut egui::Ui, cfg: &mut AppConfig) {
                     for (i, bind) in page.binds.iter_mut().enumerate() {
                         ui.add(
                             egui::TextEdit::singleline(&mut bind.key)
-                                .hint_text("e.g. 1, kp_5")
-                                .desired_width(80.0),
+                                .hint_text("e.g. 1, [, kp_5")
+                                .desired_width(KEY_W),
                         );
+
+                        egui::ComboBox::from_id_salt(("bind_kind", i))
+                            .selected_text(match bind.kind {
+                                BindKind::Chat => "Chat",
+                                BindKind::Raw => "Raw",
+                            })
+                            .width(KIND_W)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut bind.kind, BindKind::Chat, "Chat")
+                                    .on_hover_text("Exported as: bind \"key\" \"say <message>\"");
+                                ui.selectable_value(&mut bind.kind, BindKind::Raw, "Raw")
+                                    .on_hover_text(
+                                        "Exported verbatim: bind \"key\" \"<command>\". \
+                                         Use for slot1, say_team, +jump, exec, etc.",
+                                    );
+                            });
+
+                        let hint = match bind.kind {
+                            BindKind::Chat => "e.g. Rush B!",
+                            BindKind::Raw => "e.g. slot1, say_team gg",
+                        };
+                        // Multi-line wrapping editor for the message:
+                        // starts one row tall, grows with content. Lets long
+                        // chat lines or pasted paragraphs display naturally
+                        // instead of scrolling horizontally out of view.
                         ui.add(
-                            egui::TextEdit::singleline(&mut bind.message)
-                                .hint_text("e.g. Rush B!")
-                                .desired_width(380.0),
+                            egui::TextEdit::multiline(&mut bind.message)
+                                .hint_text(hint)
+                                .desired_width(message_width)
+                                .desired_rows(1),
                         );
 
                         let normalized = keys::normalize(&bind.key);

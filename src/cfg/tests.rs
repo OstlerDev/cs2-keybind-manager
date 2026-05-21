@@ -5,7 +5,7 @@
 //! and idempotency matter more than overall shape).
 
 use super::*;
-use crate::model::{AppConfig, KeyBind, Page};
+use crate::model::{AppConfig, BindKind, KeyBind, Page};
 use std::path::PathBuf;
 
 fn page(name: &str, binds: &[(&str, &str)]) -> Page {
@@ -17,6 +17,7 @@ fn page(name: &str, binds: &[(&str, &str)]) -> Page {
             .map(|(k, m)| KeyBind {
                 key: (*k).into(),
                 message: (*m).into(),
+                ..KeyBind::default()
             })
             .collect(),
     }
@@ -33,7 +34,7 @@ fn cfg_with(pages: Vec<Page>, toggle: &str) -> AppConfig {
         cs2_cfg_dir: Some(PathBuf::from("C:/cs2/cfg")),
         toggle_key: toggle.into(),
         pages,
-        selected_page: 0,
+        ..AppConfig::default()
     }
 }
 
@@ -138,6 +139,39 @@ mod generator {
         let cfg = cfg_with(vec![page("P", &[("1", "Rush B")])], "F1");
         let body = &generate_page_files(&cfg)[0].contents;
         assert!(!body.contains("echo "), "no echo lines, got: {body}");
+    }
+
+    #[test]
+    fn mixed_chat_and_raw_binds_render_correctly() {
+        let cfg = cfg_with(
+            vec![Page {
+                binds: vec![
+                    KeyBind {
+                        key: "1".into(),
+                        message: "Rush B".into(),
+                        kind: BindKind::Chat,
+                    },
+                    KeyBind {
+                        key: "2".into(),
+                        message: "slot1".into(),
+                        kind: BindKind::Raw,
+                    },
+                    KeyBind {
+                        key: "3".into(),
+                        message: "say_team Hold A".into(),
+                        kind: BindKind::Raw,
+                    },
+                ],
+                ..Page::new("Mixed")
+            }],
+            "F1",
+        );
+        let files = generate_page_files(&cfg);
+        let body = &files[0].contents;
+        assert!(body.contains(r#"bind "1" "say Rush B""#));
+        assert!(body.contains(r#"bind "2" "slot1""#));
+        assert!(body.contains(r#"bind "3" "say_team Hold A""#));
+        insta::assert_snapshot!("generator__mixed_kinds", render(&files));
     }
 
     #[test]

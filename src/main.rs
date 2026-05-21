@@ -30,6 +30,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "CS2 Keybind Manager",
         options,
-        Box::new(|_cc| Ok(Box::new(ui::App::new()))),
+        Box::new(|cc| {
+            ui::install_fonts(&cc.egui_ctx);
+            Ok(Box::new(ui::App::new()))
+        }),
     )
 }

@@ -18,11 +18,23 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use crate::cfg::import::{parse_keyvalues_bindings, ParsedBind};
 use crate::cfg::{
     generate_page_files, update_autoexec, validate, GeneratedFile, MessageWarning, ValidationError,
     AUTOEXEC_BEGIN, PAGE_FILE_PREFIX,
 };
 use crate::model::AppConfig;
+
+/// File-name prefix for Valve's per-account keybind files. The full name is
+/// `cs2_user_keys_<index>_slot<index>.vcfg` (for example
+/// `cs2_user_keys_0_slot0.vcfg`). Despite the `.vcfg` extension, the file
+/// is plain text: a list of `bind "key" "command"` lines.
+const USER_KEYS_PREFIX: &str = "cs2_user_keys_";
+const USER_KEYS_SUFFIX: &str = ".vcfg";
+
+/// CS2's Steam App ID. Used to locate the per-account cfg directory inside
+/// `Steam/userdata/<account>/<app_id>/local/cfg/`.
+const CS2_APP_ID: &str = "730";
 
 const AUTOEXEC_FILENAME: &str = "autoexec.cfg";
 const AUTOEXEC_BACKUP_FILENAME: &str = "autoexec.cfg.bak";
@@ -142,6 +154,153 @@ pub fn detect_default_cfg_dir() -> Option<PathBuf> {
     None
 }
 
+/// One Valve user-keys file we managed to read, parsed into ready-to-import
+/// bind rows.
+#[derive(Debug, Clone)]
+pub struct ImportedSource {
+    /// Full path to the source file. The import dialog surfaces this as a
+    /// hover tooltip so users can locate the file in Explorer if curious.
+    pub path: PathBuf,
+    /// Plain filename for display in the import dialog.
+    pub display_name: String,
+    pub binds: Vec<ParsedBind>,
+}
+
+/// Aggregate result of `scan_existing_binds`. Empty `sources` is the normal
+/// "nothing found" state — not an error.
+#[derive(Debug, Default, Clone)]
+pub struct ImportScan {
+    pub sources: Vec<ImportedSource>,
+}
+
+impl ImportScan {
+    pub fn total_binds(&self) -> usize {
+        self.sources.iter().map(|s| s.binds.len()).sum()
+    }
+}
+
+/// Walks up from a known CS2 cfg directory to discover Valve's per-account
+/// keybind files in Steam's userdata tree.
+///
+/// CS2 stores user-authored binds at
+/// `Steam/userdata/<account_id>/730/local/cfg/cs2_user_keys_*_slot*.vcfg`.
+/// We derive the Steam root by finding `steamapps` in the cfg dir's
+/// ancestors (its parent is the Steam root, and `userdata` is its sibling).
+///
+/// **Surfaces binds from every Steam account on this machine**, not just
+/// the most-recently-active one — users with multiple accounts probably
+/// want to pick from all of them. Results are sorted so the output is
+/// deterministic.
+///
+/// Returns an empty `Vec` if Steam root, the userdata dir, or any matching
+/// file can't be found. This is the normal "no binds to import" outcome.
+pub fn detect_steam_userdata_keybind_files(cfg_dir: &Path) -> Vec<PathBuf> {
+    let Some(steam_root) = steam_root_from_cfg_dir(cfg_dir) else {
+        return Vec::new();
+    };
+    let userdata = steam_root.join("userdata");
+    if !userdata.is_dir() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let Ok(account_entries) = fs::read_dir(&userdata) else {
+        return Vec::new();
+    };
+    for account in account_entries.flatten() {
+        let account_dir = account.path();
+        if !account_dir.is_dir() {
+            continue;
+        }
+        let cs2_cfg_dir = account_dir.join(CS2_APP_ID).join("local").join("cfg");
+        let Ok(entries) = fs::read_dir(&cs2_cfg_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if is_user_keys_filename(&entry.file_name().to_string_lossy()) {
+                out.push(entry.path());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Reads every Valve user-keys file we can find and parses it into
+/// importable bind rows.
+///
+/// **Files that contain zero importable binds are dropped** — Steam
+/// pre-creates `slot1`/`slot2`/`slot3` files for unused loadout slots,
+/// and surfacing those as empty headers in the import dialog is pure
+/// noise. Per-file I/O errors are logged and the file is skipped; we
+/// never fail the whole scan because of one bad file. An empty return
+/// means "nothing importable found", which the UI handles by either
+/// suppressing the first-run dialog or showing the "no binds found"
+/// toast for a manual scan.
+pub fn scan_existing_binds(cfg_dir: &Path) -> ImportScan {
+    let files = detect_steam_userdata_keybind_files(cfg_dir);
+    let mut sources = Vec::with_capacity(files.len());
+    for path in files {
+        let display_name = display_name_for(&path);
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let binds = parse_keyvalues_bindings(&contents);
+                if binds.is_empty() {
+                    continue;
+                }
+                sources.push(ImportedSource {
+                    path,
+                    display_name,
+                    binds,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("could not read {}: {e}", path.display());
+            }
+        }
+    }
+    ImportScan { sources }
+}
+
+/// Constructs a short, human-readable label for a discovered keys file.
+/// Includes the Steam account-id folder so users with multiple accounts
+/// can tell sources apart at a glance: `12345 / cs2_user_keys_0_slot0.vcfg`.
+fn display_name_for(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    // Walk up: cfg → local → 730 → <accountid>.
+    let account = path
+        .ancestors()
+        .nth(4)
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    match account {
+        Some(id) => format!("account {id} / {filename}"),
+        None => filename,
+    }
+}
+
+fn is_user_keys_filename(name: &str) -> bool {
+    name.starts_with(USER_KEYS_PREFIX) && name.ends_with(USER_KEYS_SUFFIX)
+}
+
+/// Best-effort Steam root from a CS2 cfg directory.
+/// `…/Steam/steamapps/common/.../game/csgo/cfg` → `…/Steam`.
+fn steam_root_from_cfg_dir(cfg_dir: &Path) -> Option<PathBuf> {
+    for ancestor in cfg_dir.ancestors() {
+        if ancestor
+            .file_name()
+            .map(|n| n.eq_ignore_ascii_case("steamapps"))
+            .unwrap_or(false)
+        {
+            return ancestor.parent().map(Path::to_path_buf);
+        }
+    }
+    None
+}
+
 fn read_optional(path: &Path) -> Result<String, ExportError> {
     match fs::read_to_string(path) {
         Ok(s) => Ok(s),
@@ -229,6 +388,7 @@ mod tests {
             binds: vec![KeyBind {
                 key: "1".into(),
                 message: msg.into(),
+                ..KeyBind::default()
             }],
             ..Page::new(name)
         };
@@ -236,7 +396,7 @@ mod tests {
             cs2_cfg_dir: Some(cfg_dir.to_path_buf()),
             toggle_key: "F1".into(),
             pages: vec![mk("A", "hi"), mk("B", "yo")],
-            selected_page: 0,
+            ..AppConfig::default()
         }
     }
 
@@ -306,6 +466,7 @@ mod tests {
                 binds: vec![KeyBind {
                     key: "1".into(),
                     message: "hi".into(),
+                    ..KeyBind::default()
                 }],
                 ..Page::new("P")
             }],
@@ -355,5 +516,201 @@ mod tests {
         export(&cfg).unwrap();
         let after_second = fs::read_to_string(cfg_dir.join("autoexec.cfg")).unwrap();
         assert_eq!(after_first, after_second);
+    }
+
+    // ────────────────── Import-scan tests ──────────────────
+    //
+    // These exercise the userdata-tree walk. We simulate the full Steam
+    // layout (cfg_dir reachable via a `steamapps` ancestor) so
+    // `steam_root_from_cfg_dir` resolves; the userdata subtree is then
+    // populated per test.
+
+    /// `<td>/Steam/steamapps/common/Counter-Strike Global Offensive/game/csgo/cfg`,
+    /// returns `(td, cfg_dir, steam_root)`.
+    fn make_full_steam_layout() -> (TempDir, PathBuf, PathBuf) {
+        let td = TempDir::new().unwrap();
+        let steam_root = td.path().join("Steam");
+        let cfg_dir = steam_root
+            .join("steamapps")
+            .join("common")
+            .join("Counter-Strike Global Offensive")
+            .join("game")
+            .join("csgo")
+            .join("cfg");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        (td, cfg_dir, steam_root)
+    }
+
+    fn write_user_keys(steam_root: &Path, account_id: &str, slot: u32, body: &str) -> PathBuf {
+        let dir = steam_root
+            .join("userdata")
+            .join(account_id)
+            .join(CS2_APP_ID)
+            .join("local")
+            .join("cfg");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("cs2_user_keys_0_slot{slot}.vcfg"));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// Wrap `pairs` (`(key, value)` strings) into a valid `"bindings"`
+    /// section so tests can focus on what's being parsed, not the syntax.
+    fn vcfg_with_bindings(pairs: &[(&str, &str)]) -> String {
+        let mut s = String::from("\"config\"\n{\n\t\"bindings\"\n\t{\n");
+        for (k, v) in pairs {
+            s.push_str(&format!("\t\t\"{k}\"\t\t\"{v}\"\n"));
+        }
+        s.push_str("\t}\n}\n");
+        s
+    }
+
+    #[test]
+    fn detect_returns_empty_when_no_steamapps_ancestor() {
+        let td = TempDir::new().unwrap();
+        let bad = td.path().join("not").join("a").join("steam").join("dir");
+        fs::create_dir_all(&bad).unwrap();
+        assert!(detect_steam_userdata_keybind_files(&bad).is_empty());
+    }
+
+    #[test]
+    fn detect_returns_empty_when_no_userdata_exists() {
+        let (_td, cfg_dir, _steam_root) = make_full_steam_layout();
+        assert!(detect_steam_userdata_keybind_files(&cfg_dir).is_empty());
+    }
+
+    #[test]
+    fn detect_finds_single_account_keys_file() {
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        let body = vcfg_with_bindings(&[("1", "say hi")]);
+        let written = write_user_keys(&steam_root, "12345", 0, &body);
+
+        let found = detect_steam_userdata_keybind_files(&cfg_dir);
+        assert_eq!(found, vec![written]);
+    }
+
+    #[test]
+    fn detect_surfaces_keys_from_every_userdata_account() {
+        // Multiple Steam accounts on the same machine should all appear in
+        // the scan — the user explicitly asked for this: "offer all keybinds
+        // from every user".
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        let body = vcfg_with_bindings(&[("1", "say hello")]);
+        let a = write_user_keys(&steam_root, "11111", 0, &body);
+        let b = write_user_keys(&steam_root, "22222", 0, &body);
+
+        let found = detect_steam_userdata_keybind_files(&cfg_dir);
+        assert_eq!(found.len(), 2, "both accounts must be visible");
+        assert!(found.contains(&a));
+        assert!(found.contains(&b));
+    }
+
+    #[test]
+    fn detect_returns_all_slot_files_per_account() {
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        let body = vcfg_with_bindings(&[("1", "say a")]);
+        write_user_keys(&steam_root, "99999", 0, &body);
+        write_user_keys(&steam_root, "99999", 1, &body);
+
+        let found = detect_steam_userdata_keybind_files(&cfg_dir);
+        assert_eq!(found.len(), 2);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "cs2_user_keys_0_slot0.vcfg"));
+        assert!(names.iter().any(|n| n == "cs2_user_keys_0_slot1.vcfg"));
+    }
+
+    #[test]
+    fn scan_parses_keyvalues_bindings_from_discovered_files() {
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        let body =
+            vcfg_with_bindings(&[("1", "say Rush B"), ("f5", "slot1"), ("[", "say bracket")]);
+        write_user_keys(&steam_root, "12345", 0, &body);
+
+        let scan = scan_existing_binds(&cfg_dir);
+        assert_eq!(scan.sources.len(), 1);
+        assert_eq!(scan.total_binds(), 3);
+        // Display name includes account id so multi-account scans aren't
+        // ambiguous.
+        assert!(scan.sources[0].display_name.contains("account 12345"));
+        assert!(scan.sources[0]
+            .display_name
+            .contains("cs2_user_keys_0_slot0.vcfg"));
+        // Verify a representative bind from each kind. Symbol keys stay
+        // in raw form (`[`, not `leftbracket`) — that's the canonical
+        // CS2 representation now.
+        let keys: Vec<&str> = scan.sources[0]
+            .binds
+            .iter()
+            .map(|b| b.key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["1", "f5", "["]);
+        assert_eq!(scan.sources[0].binds[0].message, "Rush B");
+        assert_eq!(scan.sources[0].binds[1].message, "slot1");
+        assert_eq!(scan.sources[0].binds[2].message, "bracket");
+    }
+
+    #[test]
+    fn scan_aggregates_binds_from_multiple_accounts() {
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        write_user_keys(
+            &steam_root,
+            "11111",
+            0,
+            &vcfg_with_bindings(&[("1", "say from-alice")]),
+        );
+        write_user_keys(
+            &steam_root,
+            "22222",
+            0,
+            &vcfg_with_bindings(&[("2", "say from-bob"), ("3", "say also-bob")]),
+        );
+
+        let scan = scan_existing_binds(&cfg_dir);
+        assert_eq!(scan.sources.len(), 2);
+        assert_eq!(scan.total_binds(), 3);
+        // Sources should be addressable by account id via display_name.
+        let labels: Vec<&str> = scan
+            .sources
+            .iter()
+            .map(|s| s.display_name.as_str())
+            .collect();
+        assert!(labels.iter().any(|l| l.contains("account 11111")));
+        assert!(labels.iter().any(|l| l.contains("account 22222")));
+    }
+
+    #[test]
+    fn scan_returns_empty_scan_when_nothing_to_find() {
+        let (_td, cfg_dir, _steam_root) = make_full_steam_layout();
+        let scan = scan_existing_binds(&cfg_dir);
+        assert!(scan.sources.is_empty());
+        assert_eq!(scan.total_binds(), 0);
+    }
+
+    #[test]
+    fn scan_drops_files_that_have_no_importable_binds() {
+        // Steam pre-creates slot1/slot2/slot3 vcfg files with an empty
+        // `"bindings" {}` block for loadout slots the user never used.
+        // Those would show up as dead headers in the import dialog if we
+        // didn't filter them out here.
+        let (_td, cfg_dir, steam_root) = make_full_steam_layout();
+        let empty = "\"config\"\n{\n\t\"bindings\"\n\t{\n\t}\n}\n";
+        write_user_keys(&steam_root, "12345", 1, empty);
+        write_user_keys(&steam_root, "12345", 2, empty);
+        write_user_keys(
+            &steam_root,
+            "12345",
+            0,
+            &vcfg_with_bindings(&[("1", "say hi")]),
+        );
+
+        let scan = scan_existing_binds(&cfg_dir);
+        assert_eq!(scan.sources.len(), 1, "empty slot files must be dropped");
+        assert!(scan.sources[0]
+            .display_name
+            .contains("cs2_user_keys_0_slot0.vcfg"));
+        assert_eq!(scan.total_binds(), 1);
     }
 }

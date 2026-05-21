@@ -6,9 +6,10 @@
 //! That shared code path is what guarantees the preview matches reality.
 
 pub mod escape;
+pub mod import;
 pub mod keys;
 
-use crate::model::AppConfig;
+use crate::model::{AppConfig, BindKind};
 use escape::{sanitize_chat_message, SanitizationWarning};
 
 /// Marker that fences off the block we own inside `autoexec.cfg`. Anything
@@ -381,7 +382,11 @@ pub fn generate_page_files(cfg: &AppConfig) -> Vec<GeneratedFile> {
                     kind: w,
                 });
             }
-            body.push_str(&format!("bind \"{}\" \"say {}\"\n", key, sanitized.message));
+            let payload = match bind.kind {
+                BindKind::Chat => format!("say {}", sanitized.message),
+                BindKind::Raw => sanitized.message.clone(),
+            };
+            body.push_str(&format!("bind \"{}\" \"{}\"\n", key, payload));
         }
 
         body.push('\n');
