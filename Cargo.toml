@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 insta = { version = "1.47", features = ["yaml"] }
 tempfile = "3.27"
+ttf-parser = "0.25.1"
 
 [profile.release]
 opt-level = 3
